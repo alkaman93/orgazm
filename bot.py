@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import re
 from datetime import datetime
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
@@ -56,14 +57,16 @@ def init_db():
                   currency TEXT,
                   status TEXT DEFAULT 'pending',
                   request_date TEXT,
-                  admin_answer TEXT)''')
+                  admin_answer TEXT,
+                  admin_response_text TEXT)''')
     
     c.execute('''CREATE TABLE IF NOT EXISTS complaints
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   user_id INTEGER,
                   complaint_text TEXT,
                   status TEXT DEFAULT 'pending',
-                  complaint_date TEXT)''')
+                  complaint_date TEXT,
+                  admin_response_text TEXT)''')
     
     c.execute('''CREATE TABLE IF NOT EXISTS buy_requests
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -71,7 +74,8 @@ def init_db():
                   amount REAL,
                   currency TEXT,
                   status TEXT DEFAULT 'pending',
-                  request_date TEXT)''')
+                  request_date TEXT,
+                  admin_response_text TEXT)''')
     
     conn.commit()
     conn.close()
@@ -122,7 +126,6 @@ async def show_main_menu(chat_id: int, user_id: int = None):
         "👇 <b>Выберите действие:</b>"
     )
     
-    # ИСПРАВЛЕНО: Обычные кнопки без HTML
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="❓ Уточнить ручение", callback_data="vouch_check")],
         [InlineKeyboardButton(text="⚠️ Подать жалобу", callback_data="complaint")],
@@ -179,14 +182,269 @@ async def cmd_admin(message: Message):
         f"⚠️ <b>Жалоб:</b> {pending_complaints}\n"
         f"💰 <b>Заявок на покупку:</b> {pending_buys}\n\n"
         f"📋 <b>Команды:</b>\n"
-        f"<b>/pending_vouches</b> - заявки на ручение\n"
-        f"<b>/pending_complaints</b> - жалобы\n"
-        f"<b>/pending_buys</b> - заявки на покупку\n"
+        f"<b>/pending</b> - все ожидающие заявки\n"
+        f"<b>/заявка № текст</b> - ответить на заявку\n"
         f"<b>/setbanner</b> - установить баннер\n"
-        f"<b>/removebanner</b> - удалить баннер"
+        f"<b>/removebanner</b> - удалить баннер\n\n"
+        f"💡 <b>Пример ответа:</b>\n"
+        f"/заявка 5 ✅ Ручаюсь, человек надёжный!\n"
+        f"/заявка 12 ❌ Не ручаюсь, были проблемы"
     )
     
     await message.answer(admin_text, parse_mode="HTML")
+
+# ============ КОМАНДА ДЛЯ ПРОСМОТРА ВСЕХ ЗАЯВОК ============
+@dp.message(Command("pending"))
+async def cmd_pending(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    
+    conn = sqlite3.connect('bot_database.db')
+    c = conn.cursor()
+    
+    # Заявки на ручение
+    c.execute('''SELECT id, user_id, target_username, amount, currency, request_date 
+                 FROM vouch_requests WHERE status="pending" ORDER BY id''')
+    vouches = c.fetchall()
+    
+    # Жалобы
+    c.execute('''SELECT id, user_id, complaint_text, complaint_date 
+                 FROM complaints WHERE status="pending" ORDER BY id''')
+    complaints = c.fetchall()
+    
+    # Заявки на покупку
+    c.execute('''SELECT id, user_id, amount, currency, request_date 
+                 FROM buy_requests WHERE status="pending" ORDER BY id''')
+    buys = c.fetchall()
+    
+    conn.close()
+    
+    if not vouches and not complaints and not buys:
+        await message.answer("✅ <b>Нет ожидающих заявок</b>", parse_mode="HTML")
+        return
+    
+    text = "📋 <b>ОЖИДАЮЩИЕ ЗАЯВКИ</b>\n"
+    text += "═══════════════════\n\n"
+    
+    if vouches:
+        text += "🔔 <b>Ручения:</b>\n"
+        for v in vouches:
+            text += f"<code>┌─ #ЗАЯВКА {v[0]}</code>\n"
+            text += f"<code>├─ От: @{v[2]}</code>\n"
+            text += f"<code>├─ Сумма: {v[3]} {v[4]}</code>\n"
+            text += f"<code>└─ Дата: {v[5]}</code>\n\n"
+    
+    if complaints:
+        text += "⚠️ <b>Жалобы:</b>\n"
+        for c in complaints:
+            short_text = c[2][:50] + "..." if len(c[2]) > 50 else c[2]
+            text += f"<code>┌─ #ЖАЛОБА {c[0]}</code>\n"
+            text += f"<code>├─ {short_text}</code>\n"
+            text += f"<code>└─ Дата: {c[3]}</code>\n\n"
+    
+    if buys:
+        text += "💰 <b>Покупки ручения:</b>\n"
+        for b in buys:
+            text += f"<code>┌─ #ЗАЯВКА {b[0]}</code>\n"
+            text += f"<code>├─ Сумма: {b[2]} {b[3]}</code>\n"
+            text += f"<code>└─ Дата: {b[4]}</code>\n\n"
+    
+    text += "═══════════════════\n"
+    text += "💡 <b>Как ответить:</b>\n"
+    text += "<code>/заявка 5 ✅ Ручаюсь!</code>\n"
+    text += "<code>/жалоба 3 ❌ Отклонено</code>\n"
+    text += "<code>/покупка 2 ✅ Оплачено</code>"
+    
+    await message.answer(text, parse_mode="HTML")
+
+# ============ КОМАНДА ДЛЯ ОТВЕТА НА ЗАЯВКИ ============
+@dp.message(Command("заявка"))
+async def cmd_answer_vouch(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    
+    try:
+        # Парсим команду: /заявка 5 Текст ответа
+        text = message.text.replace("/заявка", "").strip()
+        match = re.match(r"^(\d+)\s+(.+)$", text)
+        
+        if not match:
+            await message.answer(
+                "❌ <b>Неверный формат!</b>\n"
+                "Используй: <code>/заявка НОМЕР ТЕКСТ</code>\n"
+                "Пример: <code>/заявка 5 ✅ Ручаюсь, человек надёжный!</code>",
+                parse_mode="HTML"
+            )
+            return
+        
+        request_id = int(match.group(1))
+        response_text = match.group(2)
+        
+        conn = sqlite3.connect('bot_database.db')
+        c = conn.cursor()
+        
+        # Ищем заявку
+        c.execute('''SELECT user_id, target_username, amount, currency 
+                     FROM vouch_requests WHERE id=? AND status="pending"''', (request_id,))
+        request = c.fetchone()
+        
+        if not request:
+            await message.answer(f"❌ <b>Заявка #{request_id} не найдена или уже обработана</b>", parse_mode="HTML")
+            conn.close()
+            return
+        
+        user_id, target, amount, currency = request
+        
+        # Обновляем статус
+        c.execute('''UPDATE vouch_requests 
+                     SET status="answered", admin_response_text=?, admin_answer=?
+                     WHERE id=?''', 
+                  (response_text, response_text, request_id))
+        conn.commit()
+        conn.close()
+        
+        # Отправляем ответ пользователю
+        user_text = (
+            f"📬 <b>Ответ на ваш запрос о ручении</b>\n\n"
+            f"<code>┌─ ЗАЯВКА #{request_id}</code>\n"
+            f"<code>├─ Проверяли: {target}</code>\n"
+            f"<code>├─ Сумма: {amount} {currency}</code>\n"
+            f"<code>└─ Время: {datetime.now().strftime('%d.%m.%Y %H:%M')}</code>\n\n"
+            f"<b>Ответ от @{OWNER_USERNAME}:</b>\n"
+            f"{response_text}"
+        )
+        
+        await bot.send_message(user_id, user_text, parse_mode="HTML")
+        
+        await message.answer(
+            f"✅ <b>Ответ на заявку #{request_id} отправлен!</b>\n\n"
+            f"<b>Текст ответа:</b>\n{response_text}",
+            parse_mode="HTML"
+        )
+        
+    except Exception as e:
+        await message.answer(f"❌ <b>Ошибка:</b> {e}", parse_mode="HTML")
+
+# ============ КОМАНДА ДЛЯ ОТВЕТА НА ЖАЛОБЫ ============
+@dp.message(Command("жалоба"))
+async def cmd_answer_complaint(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    
+    try:
+        text = message.text.replace("/жалоба", "").strip()
+        match = re.match(r"^(\d+)\s+(.+)$", text)
+        
+        if not match:
+            await message.answer(
+                "❌ <b>Неверный формат!</b>\n"
+                "Используй: <code>/жалоба НОМЕР ТЕКСТ</code>",
+                parse_mode="HTML"
+            )
+            return
+        
+        complaint_id = int(match.group(1))
+        response_text = match.group(2)
+        
+        conn = sqlite3.connect('bot_database.db')
+        c = conn.cursor()
+        
+        c.execute('''SELECT user_id, complaint_text 
+                     FROM complaints WHERE id=? AND status="pending"''', (complaint_id,))
+        complaint = c.fetchone()
+        
+        if not complaint:
+            await message.answer(f"❌ <b>Жалоба #{complaint_id} не найдена или уже обработана</b>", parse_mode="HTML")
+            conn.close()
+            return
+        
+        user_id, complaint_text = complaint
+        
+        c.execute('''UPDATE complaints 
+                     SET status="answered", admin_response_text=?
+                     WHERE id=?''', (response_text, complaint_id))
+        conn.commit()
+        conn.close()
+        
+        user_text = (
+            f"📬 <b>Ответ на вашу жалобу</b>\n\n"
+            f"<code>┌─ ЖАЛОБА #{complaint_id}</code>\n"
+            f"<code>└─ Время: {datetime.now().strftime('%d.%m.%Y %H:%M')}</code>\n\n"
+            f"<b>Ответ от @{OWNER_USERNAME}:</b>\n"
+            f"{response_text}"
+        )
+        
+        await bot.send_message(user_id, user_text, parse_mode="HTML")
+        
+        await message.answer(
+            f"✅ <b>Ответ на жалобу #{complaint_id} отправлен!</b>\n\n"
+            f"<b>Текст ответа:</b>\n{response_text}",
+            parse_mode="HTML"
+        )
+        
+    except Exception as e:
+        await message.answer(f"❌ <b>Ошибка:</b> {e}", parse_mode="HTML")
+
+# ============ КОМАНДА ДЛЯ ОТВЕТА НА ПОКУПКИ ============
+@dp.message(Command("покупка"))
+async def cmd_answer_buy(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    
+    try:
+        text = message.text.replace("/покупка", "").strip()
+        match = re.match(r"^(\d+)\s+(.+)$", text)
+        
+        if not match:
+            await message.answer(
+                "❌ <b>Неверный формат!</b>\n"
+                "Используй: <code>/покупка НОМЕР ТЕКСТ</code>",
+                parse_mode="HTML"
+            )
+            return
+        
+        request_id = int(match.group(1))
+        response_text = match.group(2)
+        
+        conn = sqlite3.connect('bot_database.db')
+        c = conn.cursor()
+        
+        c.execute('''SELECT user_id, amount, currency 
+                     FROM buy_requests WHERE id=? AND status="pending"''', (request_id,))
+        request = c.fetchone()
+        
+        if not request:
+            await message.answer(f"❌ <b>Заявка #{request_id} не найдена или уже обработана</b>", parse_mode="HTML")
+            conn.close()
+            return
+        
+        user_id, amount, currency = request
+        
+        c.execute('''UPDATE buy_requests 
+                     SET status="answered", admin_response_text=?
+                     WHERE id=?''', (response_text, request_id))
+        conn.commit()
+        conn.close()
+        
+        user_text = (
+            f"📬 <b>Ответ на заявку о покупке ручения</b>\n\n"
+            f"<code>┌─ ЗАЯВКА #{request_id}</code>\n"
+            f"<code>├─ Сумма: {amount} {currency}</code>\n"
+            f"<code>└─ Время: {datetime.now().strftime('%d.%m.%Y %H:%M')}</code>\n\n"
+            f"<b>Ответ от @{OWNER_USERNAME}:</b>\n"
+            f"{response_text}"
+        )
+        
+        await bot.send_message(user_id, user_text, parse_mode="HTML")
+        
+        await message.answer(
+            f"✅ <b>Ответ на заявку #{request_id} отправлен!</b>\n\n"
+            f"<b>Текст ответа:</b>\n{response_text}",
+            parse_mode="HTML"
+        )
+        
+    except Exception as e:
+        await message.answer(f"❌ <b>Ошибка:</b> {e}", parse_mode="HTML")
 
 # ============ УПРАВЛЕНИЕ БАННЕРОМ ============
 @dp.message(Command("setbanner"))
@@ -303,13 +561,14 @@ async def process_currency(message: Message, state: FSMContext):
     
     # Отправляем админу
     admin_text = (
-        f"🔔 <b>НОВЫЙ ЗАПРОС НА РУЧЕНИЕ</b> #{request_id}\n\n"
-        f"👤 <b>От:</b> @{username} (ID: {user_id})\n"
-        f"🎯 <b>Проверить:</b> {target}\n"
-        f"💰 <b>Сумма:</b> {amount} {currency}\n"
-        f"📅 <b>Время:</b> {datetime.now().strftime('%d.%m.%Y %H:%M')}\n\n"
+        f"🔔 <b>НОВАЯ ЗАЯВКА НА РУЧЕНИЕ</b>\n\n"
+        f"<code>┌─ #ЗАЯВКА {request_id}</code>\n"
+        f"<code>├─ От: @{username}</code>\n"
+        f"<code>├─ Проверить: {target}</code>\n"
+        f"<code>├─ Сумма: {amount} {currency}</code>\n"
+        f"<code>└─ Время: {datetime.now().strftime('%d.%m.%Y %H:%M')}</code>\n\n"
         f"<b>Чтобы ответить:</b>\n"
-        f"<b>/answer_vouch {request_id} да/нет</b>"
+        f"<code>/заявка {request_id} ТЕКСТ ОТВЕТА</code>"
     )
     
     await bot.send_message(ADMIN_ID, admin_text, parse_mode="HTML")
@@ -317,14 +576,15 @@ async def process_currency(message: Message, state: FSMContext):
     await message.answer(
         f"✅ <b>Запрос отправлен!</b>\n\n"
         f"📋 <b>Детали:</b>\n"
-        f"• <b>Человек:</b> {target}\n"
-        f"• <b>Сумма:</b> {amount} {currency}\n\n"
+        f"<code>┌─ ЗАЯВКА #{request_id}</code>\n"
+        f"<code>├─ Человек: {target}</code>\n"
+        f"<code>├─ Сумма: {amount} {currency}</code>\n"
+        f"<code>└─ Статус: Ожидает ответа</code>\n\n"
         f"⏳ <b>Ожидайте ответа от @{OWNER_USERNAME}</b>",
         parse_mode="HTML"
     )
     
     await state.clear()
-    await show_main_menu(message.chat.id, user_id)
 
 # ============ ПОДАТЬ ЖАЛОБУ ============
 @dp.callback_query(F.data == "complaint")
@@ -368,23 +628,26 @@ async def process_complaint(message: Message, state: FSMContext):
     
     # Отправляем админу
     admin_text = (
-        f"⚠️ <b>НОВАЯ ЖАЛОБА</b> #{complaint_id}\n\n"
-        f"👤 <b>От:</b> @{username} (ID: {user_id})\n"
-        f"📝 <b>Текст:</b>\n{complaint_text}\n\n"
-        f"📅 <b>Время:</b> {datetime.now().strftime('%d.%m.%Y %H:%M')}"
+        f"⚠️ <b>НОВАЯ ЖАЛОБА</b>\n\n"
+        f"<code>┌─ #ЖАЛОБА {complaint_id}</code>\n"
+        f"<code>├─ От: @{username}</code>\n"
+        f"<code>├─ Текст: {complaint_text[:100]}...</code>\n"
+        f"<code>└─ Время: {datetime.now().strftime('%d.%m.%Y %H:%M')}</code>\n\n"
+        f"<b>Чтобы ответить:</b>\n"
+        f"<code>/жалоба {complaint_id} ТЕКСТ ОТВЕТА</code>"
     )
     
     await bot.send_message(ADMIN_ID, admin_text, parse_mode="HTML")
     
     await message.answer(
         f"✅ <b>Жалоба отправлена!</b>\n\n"
-        f"📨 <b>@{OWNER_USERNAME} рассмотрит её в ближайшее время.</b>\n\n"
-        f"⚠️ <b>Важно:</b> Если обман подтвердится — вам <b>ВОЗМЕСТЯТ полную сумму!</b>",
+        f"<code>┌─ ЖАЛОБА #{complaint_id}</code>\n"
+        f"<code>└─ Статус: Рассматривается</code>\n\n"
+        f"📨 <b>@{OWNER_USERNAME} ответит в ближайшее время.</b>",
         parse_mode="HTML"
     )
     
     await state.clear()
-    await show_main_menu(message.chat.id, user_id)
 
 # ============ КУПИТЬ РУЧЕНИЕ ============
 @dp.callback_query(F.data == "buy_vouch")
@@ -450,25 +713,27 @@ async def buy_currency(message: Message, state: FSMContext):
     
     # Отправляем админу
     admin_text = (
-        f"💰 <b>ЗАЯВКА НА ПОКУПКУ РУЧЕНИЯ</b> #{request_id}\n\n"
-        f"👤 <b>От:</b> @{username} (ID: {user_id})\n"
-        f"💰 <b>Сумма:</b> {amount} {currency}\n"
-        f"📅 <b>Время:</b> {datetime.now().strftime('%d.%m.%Y %H:%M')}"
+        f"💰 <b>НОВАЯ ЗАЯВКА НА ПОКУПКУ РУЧЕНИЯ</b>\n\n"
+        f"<code>┌─ #ЗАЯВКА {request_id}</code>\n"
+        f"<code>├─ От: @{username}</code>\n"
+        f"<code>├─ Сумма: {amount} {currency}</code>\n"
+        f"<code>└─ Время: {datetime.now().strftime('%d.%m.%Y %H:%M')}</code>\n\n"
+        f"<b>Чтобы ответить:</b>\n"
+        f"<code>/покупка {request_id} ТЕКСТ ОТВЕТА</code>"
     )
     
     await bot.send_message(ADMIN_ID, admin_text, parse_mode="HTML")
     
     await message.answer(
         f"✅ <b>Заявка принята!</b>\n\n"
-        f"💰 <b>Сумма:</b> {amount} {currency}\n\n"
-        f"📨 <b>Свяжитесь со мной в личные сообщения:</b>\n"
-        f"👉 <b>@{OWNER_USERNAME}</b>\n\n"
-        f"<b>Я рассмотрю вашу заявку и отвечу на все вопросы.</b>",
+        f"<code>┌─ ЗАЯВКА #{request_id}</code>\n"
+        f"<code>├─ Сумма: {amount} {currency}</code>\n"
+        f"<code>└─ Статус: Ожидает ответа</code>\n\n"
+        f"📨 <b>@{OWNER_USERNAME} свяжется с вами.</b>",
         parse_mode="HTML"
     )
     
     await state.clear()
-    await show_main_menu(message.chat.id, user_id)
 
 # ============ ИНФОРМАЦИЯ ============
 @dp.callback_query(F.data == "info")
@@ -509,127 +774,17 @@ async def back_to_menu(call: CallbackQuery, state: FSMContext):
     await call.message.delete()
     await show_main_menu(call.from_user.id, call.from_user.id)
 
-# ============ АДМИН КОМАНДЫ ============
-@dp.message(Command("pending_vouches"))
-async def pending_vouches(message: Message):
-    if message.from_user.id != ADMIN_ID:
-        return
-    
-    conn = sqlite3.connect('bot_database.db')
-    c = conn.cursor()
-    c.execute('''SELECT * FROM vouch_requests WHERE status="pending" ORDER BY id DESC''')
-    requests = c.fetchall()
-    conn.close()
-    
-    if not requests:
-        await message.answer("✅ <b>Нет ожидающих заявок на ручение</b>", parse_mode="HTML")
-        return
-    
-    text = "⏳ <b>Ожидающие заявки на ручение:</b>\n\n"
-    for req in requests:
-        text += f"<b>#{req[0]}</b> | От @{req[2]} | <b>{req[3]} {req[4]}</b> | {req[5]}\n"
-        text += f"<b>Ответ:</b> /answer_vouch {req[0]} да/нет\n\n"
-    
-    await message.answer(text, parse_mode="HTML")
-
-@dp.message(Command("answer_vouch"))
-async def answer_vouch(message: Message):
-    if message.from_user.id != ADMIN_ID:
-        return
-    
-    try:
-        parts = message.text.split()
-        request_id = int(parts[1])
-        answer = parts[2].lower()
-        
-        conn = sqlite3.connect('bot_database.db')
-        c = conn.cursor()
-        c.execute('''SELECT user_id, target_username, amount, currency FROM vouch_requests WHERE id=?''', (request_id,))
-        req = c.fetchone()
-        
-        if not req:
-            await message.answer("❌ <b>Заявка не найдена</b>", parse_mode="HTML")
-            return
-        
-        user_id, target, amount, currency = req
-        
-        if answer in ['да', 'yes']:
-            result_text = (
-                f"✅ <b>РУЧАЮСЬ!</b>\n\n"
-                f"<b>@{OWNER_USERNAME} подтверждает надёжность</b> @{target}\n"
-                f"💰 <b>Сумма:</b> {amount} {currency}\n\n"
-                f"<b>Можете смело проводить сделку!</b>"
-            )
-            new_status = "approved"
-        else:
-            result_text = (
-                f"❌ <b>НЕ РУЧАЮСЬ</b>\n\n"
-                f"<b>@{OWNER_USERNAME} НЕ подтверждает надёжность</b> @{target}\n\n"
-                f"<b>Будьте осторожны!</b>"
-            )
-            new_status = "rejected"
-        
-        c.execute('''UPDATE vouch_requests SET status=?, admin_answer=? WHERE id=?''',
-                  (new_status, result_text, request_id))
-        conn.commit()
-        
-        await bot.send_message(user_id, result_text, parse_mode="HTML")
-        
-        conn.close()
-        await message.answer("✅ <b>Ответ отправлен пользователю</b>", parse_mode="HTML")
-        
-    except Exception as e:
-        await message.answer(f"❌ <b>Ошибка:</b> {e}. Используй: <b>/answer_vouch ID да/нет</b>", parse_mode="HTML")
-
-@dp.message(Command("pending_complaints"))
-async def pending_complaints(message: Message):
-    if message.from_user.id != ADMIN_ID:
-        return
-    
-    conn = sqlite3.connect('bot_database.db')
-    c = conn.cursor()
-    c.execute('''SELECT * FROM complaints WHERE status="pending" ORDER BY id DESC''')
-    complaints = c.fetchall()
-    conn.close()
-    
-    if not complaints:
-        await message.answer("✅ <b>Нет ожидающих жалоб</b>", parse_mode="HTML")
-        return
-    
-    text = "⚠️ <b>Ожидающие жалобы:</b>\n\n"
-    for comp in complaints:
-        text += f"<b>#{comp[0]}</b> | От ID {comp[1]} | {comp[4]}\n"
-        text += f"📝 {comp[2][:100]}...\n\n"
-    
-    await message.answer(text, parse_mode="HTML")
-
-@dp.message(Command("pending_buys"))
-async def pending_buys(message: Message):
-    if message.from_user.id != ADMIN_ID:
-        return
-    
-    conn = sqlite3.connect('bot_database.db')
-    c = conn.cursor()
-    c.execute('''SELECT * FROM buy_requests WHERE status="pending" ORDER BY id DESC''')
-    buys = c.fetchall()
-    conn.close()
-    
-    if not buys:
-        await message.answer("✅ <b>Нет ожидающих заявок на покупку</b>", parse_mode="HTML")
-        return
-    
-    text = "💰 <b>Ожидающие заявки на покупку ручения:</b>\n\n"
-    for buy in buys:
-        text += f"<b>#{buy[0]}</b> | От ID {buy[1]} | <b>{buy[2]} {buy[3]}</b> | {buy[4]}\n"
-    
-    await message.answer(text, parse_mode="HTML")
-
 # ============ ЗАПУСК ============
 async def main():
     print("🤖 Бот запущен!")
     print(f"👑 Админ: @{OWNER_USERNAME}")
     print(f"📱 Бот: @{BOT_USERNAME}")
     print(f"🖼️ Баннер: {'есть' if os.path.exists(BANNER_PATH) else 'нет'}")
+    print("\n📋 Доступные команды:")
+    print("/pending - все ожидающие заявки")
+    print("/заявка НОМЕР ТЕКСТ - ответ на ручение")
+    print("/жалоба НОМЕР ТЕКСТ - ответ на жалобу")
+    print("/покупка НОМЕР ТЕКСТ - ответ на покупку")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
