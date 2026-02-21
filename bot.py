@@ -34,9 +34,6 @@ storage = MemoryStorage()
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=storage)
 
-# Для отслеживания последнего баннера
-last_banner = {}
-
 # ============ БАЗА ДАННЫХ ============
 def init_db():
     conn = sqlite3.connect('bot_database.db')
@@ -98,18 +95,11 @@ class BuyVouchStates(StatesGroup):
 # ============ ФУНКЦИЯ ОТПРАВКИ С БАННЕРОМ ============
 async def send_with_banner(chat_id: int, text: str, keyboard=None):
     try:
-        if chat_id in last_banner:
-            try:
-                await bot.delete_message(chat_id, last_banner[chat_id])
-            except:
-                pass
-        
         if os.path.exists(BANNER_PATH):
             photo = FSInputFile(BANNER_PATH)
-            msg = await bot.send_photo(chat_id, photo)
-            last_banner[chat_id] = msg.message_id
-        
-        await bot.send_message(chat_id, text, reply_markup=keyboard, parse_mode="HTML")
+            await bot.send_photo(chat_id, photo, caption=text, reply_markup=keyboard, parse_mode="HTML")
+        else:
+            await bot.send_message(chat_id, text, reply_markup=keyboard, parse_mode="HTML")
     except Exception as e:
         print(f"Ошибка: {e}")
         await bot.send_message(chat_id, text, reply_markup=keyboard, parse_mode="HTML")
@@ -130,7 +120,8 @@ async def show_main_menu(chat_id: int, user_id: int = None):
         [InlineKeyboardButton(text="❓ Уточнить ручение", callback_data="vouch_check")],
         [InlineKeyboardButton(text="⚠️ Подать жалобу", callback_data="complaint")],
         [InlineKeyboardButton(text="💼 Купить ручение", callback_data="buy_vouch")],
-        [InlineKeyboardButton(text="ℹ️ Информация", callback_data="info")]
+        [InlineKeyboardButton(text="ℹ️ Информация", callback_data="info")],
+        [InlineKeyboardButton(text="📞 Мой ЛС", url=f"https://t.me/{OWNER_USERNAME}")]
     ])
     
     await send_with_banner(chat_id, menu_text, keyboard)
@@ -187,8 +178,7 @@ async def cmd_admin(message: Message):
         f"<b>/setbanner</b> - установить баннер\n"
         f"<b>/removebanner</b> - удалить баннер\n\n"
         f"💡 <b>Пример ответа:</b>\n"
-        f"/заявка 5 ✅ Ручаюсь, человек надёжный!\n"
-        f"/заявка 12 ❌ Не ручаюсь, были проблемы"
+        f"/заявка 5 ✅ Ручаюсь, человек надёжный!"
     )
     
     await message.answer(admin_text, parse_mode="HTML")
@@ -202,17 +192,14 @@ async def cmd_pending(message: Message):
     conn = sqlite3.connect('bot_database.db')
     c = conn.cursor()
     
-    # Заявки на ручение
     c.execute('''SELECT id, user_id, target_username, amount, currency, request_date 
                  FROM vouch_requests WHERE status="pending" ORDER BY id''')
     vouches = c.fetchall()
     
-    # Жалобы
     c.execute('''SELECT id, user_id, complaint_text, complaint_date 
                  FROM complaints WHERE status="pending" ORDER BY id''')
     complaints = c.fetchall()
     
-    # Заявки на покупку
     c.execute('''SELECT id, user_id, amount, currency, request_date 
                  FROM buy_requests WHERE status="pending" ORDER BY id''')
     buys = c.fetchall()
@@ -251,9 +238,7 @@ async def cmd_pending(message: Message):
     
     text += "═══════════════════\n"
     text += "💡 <b>Как ответить:</b>\n"
-    text += "<code>/заявка 5 ✅ Ручаюсь!</code>\n"
-    text += "<code>/жалоба 3 ❌ Отклонено</code>\n"
-    text += "<code>/покупка 2 ✅ Оплачено</code>"
+    text += "<code>/заявка 5 ✅ Ручаюсь!</code>"
     
     await message.answer(text, parse_mode="HTML")
 
@@ -264,7 +249,6 @@ async def cmd_answer_vouch(message: Message):
         return
     
     try:
-        # Парсим команду: /заявка 5 Текст ответа
         text = message.text.replace("/заявка", "").strip()
         match = re.match(r"^(\d+)\s+(.+)$", text)
         
@@ -283,7 +267,6 @@ async def cmd_answer_vouch(message: Message):
         conn = sqlite3.connect('bot_database.db')
         c = conn.cursor()
         
-        # Ищем заявку
         c.execute('''SELECT user_id, target_username, amount, currency 
                      FROM vouch_requests WHERE id=? AND status="pending"''', (request_id,))
         request = c.fetchone()
@@ -295,7 +278,6 @@ async def cmd_answer_vouch(message: Message):
         
         user_id, target, amount, currency = request
         
-        # Обновляем статус
         c.execute('''UPDATE vouch_requests 
                      SET status="answered", admin_response_text=?, admin_answer=?
                      WHERE id=?''', 
@@ -303,132 +285,10 @@ async def cmd_answer_vouch(message: Message):
         conn.commit()
         conn.close()
         
-        # Отправляем ответ пользователю
         user_text = (
             f"📬 <b>Ответ на ваш запрос о ручении</b>\n\n"
             f"<code>┌─ ЗАЯВКА #{request_id}</code>\n"
             f"<code>├─ Проверяли: {target}</code>\n"
-            f"<code>├─ Сумма: {amount} {currency}</code>\n"
-            f"<code>└─ Время: {datetime.now().strftime('%d.%m.%Y %H:%M')}</code>\n\n"
-            f"<b>Ответ от @{OWNER_USERNAME}:</b>\n"
-            f"{response_text}"
-        )
-        
-        await bot.send_message(user_id, user_text, parse_mode="HTML")
-        
-        await message.answer(
-            f"✅ <b>Ответ на заявку #{request_id} отправлен!</b>\n\n"
-            f"<b>Текст ответа:</b>\n{response_text}",
-            parse_mode="HTML"
-        )
-        
-    except Exception as e:
-        await message.answer(f"❌ <b>Ошибка:</b> {e}", parse_mode="HTML")
-
-# ============ КОМАНДА ДЛЯ ОТВЕТА НА ЖАЛОБЫ ============
-@dp.message(Command("жалоба"))
-async def cmd_answer_complaint(message: Message):
-    if message.from_user.id != ADMIN_ID:
-        return
-    
-    try:
-        text = message.text.replace("/жалоба", "").strip()
-        match = re.match(r"^(\d+)\s+(.+)$", text)
-        
-        if not match:
-            await message.answer(
-                "❌ <b>Неверный формат!</b>\n"
-                "Используй: <code>/жалоба НОМЕР ТЕКСТ</code>",
-                parse_mode="HTML"
-            )
-            return
-        
-        complaint_id = int(match.group(1))
-        response_text = match.group(2)
-        
-        conn = sqlite3.connect('bot_database.db')
-        c = conn.cursor()
-        
-        c.execute('''SELECT user_id, complaint_text 
-                     FROM complaints WHERE id=? AND status="pending"''', (complaint_id,))
-        complaint = c.fetchone()
-        
-        if not complaint:
-            await message.answer(f"❌ <b>Жалоба #{complaint_id} не найдена или уже обработана</b>", parse_mode="HTML")
-            conn.close()
-            return
-        
-        user_id, complaint_text = complaint
-        
-        c.execute('''UPDATE complaints 
-                     SET status="answered", admin_response_text=?
-                     WHERE id=?''', (response_text, complaint_id))
-        conn.commit()
-        conn.close()
-        
-        user_text = (
-            f"📬 <b>Ответ на вашу жалобу</b>\n\n"
-            f"<code>┌─ ЖАЛОБА #{complaint_id}</code>\n"
-            f"<code>└─ Время: {datetime.now().strftime('%d.%m.%Y %H:%M')}</code>\n\n"
-            f"<b>Ответ от @{OWNER_USERNAME}:</b>\n"
-            f"{response_text}"
-        )
-        
-        await bot.send_message(user_id, user_text, parse_mode="HTML")
-        
-        await message.answer(
-            f"✅ <b>Ответ на жалобу #{complaint_id} отправлен!</b>\n\n"
-            f"<b>Текст ответа:</b>\n{response_text}",
-            parse_mode="HTML"
-        )
-        
-    except Exception as e:
-        await message.answer(f"❌ <b>Ошибка:</b> {e}", parse_mode="HTML")
-
-# ============ КОМАНДА ДЛЯ ОТВЕТА НА ПОКУПКИ ============
-@dp.message(Command("покупка"))
-async def cmd_answer_buy(message: Message):
-    if message.from_user.id != ADMIN_ID:
-        return
-    
-    try:
-        text = message.text.replace("/покупка", "").strip()
-        match = re.match(r"^(\d+)\s+(.+)$", text)
-        
-        if not match:
-            await message.answer(
-                "❌ <b>Неверный формат!</b>\n"
-                "Используй: <code>/покупка НОМЕР ТЕКСТ</code>",
-                parse_mode="HTML"
-            )
-            return
-        
-        request_id = int(match.group(1))
-        response_text = match.group(2)
-        
-        conn = sqlite3.connect('bot_database.db')
-        c = conn.cursor()
-        
-        c.execute('''SELECT user_id, amount, currency 
-                     FROM buy_requests WHERE id=? AND status="pending"''', (request_id,))
-        request = c.fetchone()
-        
-        if not request:
-            await message.answer(f"❌ <b>Заявка #{request_id} не найдена или уже обработана</b>", parse_mode="HTML")
-            conn.close()
-            return
-        
-        user_id, amount, currency = request
-        
-        c.execute('''UPDATE buy_requests 
-                     SET status="answered", admin_response_text=?
-                     WHERE id=?''', (response_text, request_id))
-        conn.commit()
-        conn.close()
-        
-        user_text = (
-            f"📬 <b>Ответ на заявку о покупке ручения</b>\n\n"
-            f"<code>┌─ ЗАЯВКА #{request_id}</code>\n"
             f"<code>├─ Сумма: {amount} {currency}</code>\n"
             f"<code>└─ Время: {datetime.now().strftime('%d.%m.%Y %H:%M')}</code>\n\n"
             f"<b>Ответ от @{OWNER_USERNAME}:</b>\n"
@@ -548,7 +408,6 @@ async def process_currency(message: Message, state: FSMContext):
     user_id = message.from_user.id
     username = message.from_user.username or "нет юзернейма"
     
-    # Сохраняем в БД
     conn = sqlite3.connect('bot_database.db')
     c = conn.cursor()
     c.execute('''INSERT INTO vouch_requests 
@@ -559,7 +418,6 @@ async def process_currency(message: Message, state: FSMContext):
     conn.commit()
     conn.close()
     
-    # Отправляем админу
     admin_text = (
         f"🔔 <b>НОВАЯ ЗАЯВКА НА РУЧЕНИЕ</b>\n\n"
         f"<code>┌─ #ЗАЯВКА {request_id}</code>\n"
@@ -575,7 +433,6 @@ async def process_currency(message: Message, state: FSMContext):
     
     await message.answer(
         f"✅ <b>Запрос отправлен!</b>\n\n"
-        f"📋 <b>Детали:</b>\n"
         f"<code>┌─ ЗАЯВКА #{request_id}</code>\n"
         f"<code>├─ Человек: {target}</code>\n"
         f"<code>├─ Сумма: {amount} {currency}</code>\n"
@@ -615,7 +472,6 @@ async def process_complaint(message: Message, state: FSMContext):
     user_id = message.from_user.id
     username = message.from_user.username or "нет юзернейма"
     
-    # Сохраняем в БД
     conn = sqlite3.connect('bot_database.db')
     c = conn.cursor()
     c.execute('''INSERT INTO complaints 
@@ -626,15 +482,12 @@ async def process_complaint(message: Message, state: FSMContext):
     conn.commit()
     conn.close()
     
-    # Отправляем админу
     admin_text = (
         f"⚠️ <b>НОВАЯ ЖАЛОБА</b>\n\n"
         f"<code>┌─ #ЖАЛОБА {complaint_id}</code>\n"
         f"<code>├─ От: @{username}</code>\n"
         f"<code>├─ Текст: {complaint_text[:100]}...</code>\n"
-        f"<code>└─ Время: {datetime.now().strftime('%d.%m.%Y %H:%M')}</code>\n\n"
-        f"<b>Чтобы ответить:</b>\n"
-        f"<code>/жалоба {complaint_id} ТЕКСТ ОТВЕТА</code>"
+        f"<code>└─ Время: {datetime.now().strftime('%d.%m.%Y %H:%M')}</code>"
     )
     
     await bot.send_message(ADMIN_ID, admin_text, parse_mode="HTML")
@@ -700,7 +553,6 @@ async def buy_currency(message: Message, state: FSMContext):
     user_id = message.from_user.id
     username = message.from_user.username or "нет юзернейма"
     
-    # Сохраняем в БД
     conn = sqlite3.connect('bot_database.db')
     c = conn.cursor()
     c.execute('''INSERT INTO buy_requests 
@@ -711,15 +563,12 @@ async def buy_currency(message: Message, state: FSMContext):
     conn.commit()
     conn.close()
     
-    # Отправляем админу
     admin_text = (
         f"💰 <b>НОВАЯ ЗАЯВКА НА ПОКУПКУ РУЧЕНИЯ</b>\n\n"
         f"<code>┌─ #ЗАЯВКА {request_id}</code>\n"
         f"<code>├─ От: @{username}</code>\n"
         f"<code>├─ Сумма: {amount} {currency}</code>\n"
-        f"<code>└─ Время: {datetime.now().strftime('%d.%m.%Y %H:%M')}</code>\n\n"
-        f"<b>Чтобы ответить:</b>\n"
-        f"<code>/покупка {request_id} ТЕКСТ ОТВЕТА</code>"
+        f"<code>└─ Время: {datetime.now().strftime('%d.%m.%Y %H:%M')}</code>"
     )
     
     await bot.send_message(ADMIN_ID, admin_text, parse_mode="HTML")
@@ -761,7 +610,8 @@ async def info(call: CallbackQuery):
     )
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔙 Назад в меню", callback_data="back_to_menu")]
+        [InlineKeyboardButton(text="🔙 Назад в меню", callback_data="back_to_menu")],
+        [InlineKeyboardButton(text="📞 Мой ЛС", url=f"https://t.me/{OWNER_USERNAME}")]
     ])
     
     await bot.send_message(call.from_user.id, info_text, reply_markup=keyboard, parse_mode="HTML")
@@ -783,8 +633,6 @@ async def main():
     print("\n📋 Доступные команды:")
     print("/pending - все ожидающие заявки")
     print("/заявка НОМЕР ТЕКСТ - ответ на ручение")
-    print("/жалоба НОМЕР ТЕКСТ - ответ на жалобу")
-    print("/покупка НОМЕР ТЕКСТ - ответ на покупку")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
