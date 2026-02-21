@@ -110,11 +110,6 @@ async def send_with_banner(chat_id: int, text: str, keyboard=None):
         print(f"Ошибка: {e}")
         await bot.send_message(chat_id, text, reply_markup=keyboard, parse_mode="HTML")
 
-# ============ ФУНКЦИЯ СОЗДАНИЯ ЖИРНЫХ КНОПОК ============
-def create_bold_button(text: str, callback_data: str):
-    """Создает кнопку с жирным текстом"""
-    return InlineKeyboardButton(text=f"<b>{text}</b>", callback_data=callback_data)
-
 # ============ ГЛАВНОЕ МЕНЮ ============
 async def show_main_menu(chat_id: int, user_id: int = None):
     """Показывает главное меню с полным описанием"""
@@ -127,11 +122,12 @@ async def show_main_menu(chat_id: int, user_id: int = None):
         "👇 <b>Выберите действие:</b>"
     )
     
+    # ИСПРАВЛЕНО: Обычные кнопки без HTML
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [create_bold_button("❓ Уточнить ручение", "vouch_check")],
-        [create_bold_button("⚠️ Подать жалобу", "complaint")],
-        [create_bold_button("💼 Купить ручение", "buy_vouch")],
-        [create_bold_button("ℹ️ Информация", "info")]
+        [InlineKeyboardButton(text="❓ Уточнить ручение", callback_data="vouch_check")],
+        [InlineKeyboardButton(text="⚠️ Подать жалобу", callback_data="complaint")],
+        [InlineKeyboardButton(text="💼 Купить ручение", callback_data="buy_vouch")],
+        [InlineKeyboardButton(text="ℹ️ Информация", callback_data="info")]
     ])
     
     await send_with_banner(chat_id, menu_text, keyboard)
@@ -238,7 +234,7 @@ async def vouch_check(call: CallbackQuery, state: FSMContext):
     )
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [create_bold_button("🔙 Назад в меню", "back_to_menu")]
+        [InlineKeyboardButton(text="🔙 Назад в меню", callback_data="back_to_menu")]
     ])
     
     await bot.send_message(call.from_user.id, text, reply_markup=keyboard, parse_mode="HTML")
@@ -259,7 +255,7 @@ async def process_target(message: Message, state: FSMContext):
     )
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [create_bold_button("🔙 Назад в меню", "back_to_menu")]
+        [InlineKeyboardButton(text="🔙 Назад в меню", callback_data="back_to_menu")]
     ])
     
     await message.answer(text, reply_markup=keyboard, parse_mode="HTML")
@@ -277,7 +273,7 @@ async def process_amount(message: Message, state: FSMContext):
         )
         
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [create_bold_button("🔙 Назад в меню", "back_to_menu")]
+            [InlineKeyboardButton(text="🔙 Назад в меню", callback_data="back_to_menu")]
         ])
         
         await message.answer(text, reply_markup=keyboard, parse_mode="HTML")
@@ -346,7 +342,7 @@ async def complaint(call: CallbackQuery, state: FSMContext):
     )
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [create_bold_button("🔙 Назад в меню", "back_to_menu")]
+        [InlineKeyboardButton(text="🔙 Назад в меню", callback_data="back_to_menu")]
     ])
     
     await bot.send_message(call.from_user.id, text, reply_markup=keyboard, parse_mode="HTML")
@@ -402,7 +398,7 @@ async def buy_vouch(call: CallbackQuery, state: FSMContext):
     )
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [create_bold_button("🔙 Назад в меню", "back_to_menu")]
+        [InlineKeyboardButton(text="🔙 Назад в меню", callback_data="back_to_menu")]
     ])
     
     await bot.send_message(call.from_user.id, text, reply_markup=keyboard, parse_mode="HTML")
@@ -425,7 +421,7 @@ async def buy_amount(message: Message, state: FSMContext):
         )
         
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [create_bold_button("🔙 Назад в меню", "back_to_menu")]
+            [InlineKeyboardButton(text="🔙 Назад в меню", callback_data="back_to_menu")]
         ])
         
         await message.answer(text, reply_markup=keyboard, parse_mode="HTML")
@@ -500,7 +496,7 @@ async def info(call: CallbackQuery):
     )
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [create_bold_button("🔙 Назад в меню", "back_to_menu")]
+        [InlineKeyboardButton(text="🔙 Назад в меню", callback_data="back_to_menu")]
     ])
     
     await bot.send_message(call.from_user.id, info_text, reply_markup=keyboard, parse_mode="HTML")
